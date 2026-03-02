@@ -3,6 +3,7 @@
 from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
+import json
 import time
 
 from PySide6.QtWidgets import (
@@ -639,6 +640,11 @@ class ChatBubble(QFrame):
             if body_events:
                 for event in body_events:
                     self.add_body_event(event)
+                # 额外处理 thinking_blocks（可能在 content_events 中没有 thinking 事件时传入）
+                # 这里不会重复添加，因为 add_thinking 有去重逻辑
+                if thinking_blocks:
+                    for tb in thinking_blocks:
+                        self.add_thinking(tb)
             else:
                 # 兼容旧参数：历史 thinking_blocks 先作为顺序事件渲染
                 if thinking_blocks:
@@ -719,7 +725,6 @@ class ChatBubble(QFrame):
             w = ToolCallWidget(tool_name, tool_input)
             self._sequence_container.addWidget(w)
             self._last_sequence_type = "tool"
-            self._mark_response_started()
 
     def add_tool_result(self, tool_name: str, status: str = "", content: str = ""):
         """在气泡内添加工具结果显示。"""
@@ -727,7 +732,6 @@ class ChatBubble(QFrame):
             w = ToolResultWidget(tool_name, status, content)
             self._sequence_container.addWidget(w)
             self._last_sequence_type = "tool"
-            self._mark_response_started()
 
     def _add_text_segment(self, text: str):
         if self._role == "user" or not hasattr(self, "_sequence_container"):
@@ -1410,9 +1414,13 @@ class ChatPage(QWidget):
         self._worker_user_msg: str = ""     # 触发 worker 的用户消息
         self._worker_detached: bool = False  # 用户是否已切走到其他 session
         self._last_stdout_time: float = 0.0  # 上次收到 stdout 数据的时间
+        self._response_started_at: float = 0.0  # 当前轮次开始时间
+        self._stream_event_backlog: list[dict] = []  # 流式期间的思考/工具事件缓存
+        self._stream_event_signatures: set[str] = set()  # 流式事件去重
         self._restore_render_items: list[dict] = []
         self._restore_render_index: int = 0
         self._restore_target_session_id: str = ""
+        self._pending_live_reattach_session_id: str = ""
         self._last_models_with_source: list[tuple[str, str]] = []
         self._splitter_left_size: int = 280
         self._init_ui()
@@ -1429,6 +1437,8 @@ class ChatPage(QWidget):
 
         # 左侧：会话历史面板
         self._session_panel = SessionListPanel()
+        self._session_panel.setMinimumWidth(self._splitter_left_size)
+        self._session_panel.setMaximumWidth(self._splitter_left_size)
         self._session_panel.session_selected.connect(self._restore_session)
         self._session_panel.new_chat_requested.connect(self._new_chat)
         self._session_panel.session_deleted.connect(self._on_session_deleted)
@@ -1564,8 +1574,10 @@ class ChatPage(QWidget):
     def _restore_splitter_position(self):
         if not hasattr(self, "_splitter"):
             return
+        left = int(self._splitter_left_size or 280)
+        self._session_panel.setMinimumWidth(left)
+        self._session_panel.setMaximumWidth(left)
         total = max(800, self._splitter.size().width())
-        left = max(170, min(420, int(self._splitter_left_size or 280)))
         right = max(300, total - left)
         self._splitter.setSizes([left, right])
 
@@ -1594,6 +1606,8 @@ class ChatPage(QWidget):
 
         self._chat_workspace = CLIBridge.set_chat_workspace(resolved)
         self._current_session_id = ""
+        # 清除会话缓存，确保新工作区的会话列表正确加载
+        CLIBridge.invalidate_session_caches()
         self._session_panel.refresh()
         self._new_chat()
         self._update_workspace_ui()
@@ -1758,6 +1772,9 @@ class ChatPage(QWidget):
         self._display.add_user_message(text)
         self._set_busy(True)
         self._streaming_text = ""
+        self._response_started_at = time.perf_counter()
+        self._stream_event_backlog = []
+        self._stream_event_signatures.clear()
         self._stdout_streaming_active = False
 
         # 记录 worker 与 session 的关联
@@ -1778,7 +1795,6 @@ class ChatPage(QWidget):
             self._session_model_overrides[self._current_session_id] = model
 
         # 记录发送前的时间戳，用于发送后检测新创建的 session
-        import time
         self._send_timestamp = time.time()
         # 已知的 session JSONL 偏移（用于增量检测工具调用）
         # 初始化为当前文件末尾偏移，避免显示之前对话中的工具调用
@@ -1805,6 +1821,35 @@ class ChatPage(QWidget):
         # 启动工具调用实时监控
         self._start_tool_monitor()
 
+    def _remember_stream_event(self, event: dict) -> bool:
+        """记录流式事件并去重，返回是否为新事件。"""
+        try:
+            signature = json.dumps(event, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            signature = str(event)
+        if signature in self._stream_event_signatures:
+            return False
+        self._stream_event_signatures.add(signature)
+        self._stream_event_backlog.append(dict(event))
+        return True
+
+    def _replay_stream_backlog(self, bubble: ChatBubble | None):
+        """将流式期间缓存的事件重放到当前气泡。"""
+        if bubble is None:
+            return
+        for event in self._stream_event_backlog:
+            bubble.add_body_event(event)
+
+    def _finalize_response_timing(self):
+        """输出本轮响应耗时（开始到结束）。"""
+        started = self._response_started_at
+        self._response_started_at = 0.0
+        if started <= 0:
+            return
+        elapsed = max(0.0, time.perf_counter() - started)
+        if not self._worker_detached:
+            self._display.add_system_message(f"⏱ 本次输出耗时: {elapsed:.2f}s")
+
     def _on_chunk(self, chunk: str):
         import time as _time
         if chunk:
@@ -1829,6 +1874,7 @@ class ChatPage(QWidget):
                 if sid:
                     self._worker_session_id = sid
             self._cleanup_worker()
+            self._finalize_response_timing()
             self._worker_detached = False
             QTimer.singleShot(500, self._session_panel.refresh)
             return
@@ -1863,6 +1909,8 @@ class ChatPage(QWidget):
         ).strip()
         if clean_text != self._streaming_text.strip():
             self._display.update_last_bot_text(clean_text)
+
+        self._finalize_response_timing()
 
         self._cleanup_worker()
 
@@ -2110,21 +2158,30 @@ class ChatPage(QWidget):
 
                 # Message-level thinking (e.g. reasoning_content in OpenAI format)
                 msg_thinking = _extract_thinking_from_message(msg_obj)
-                if msg_thinking and bubble is not None:
-                    bubble.append_thinking_delta(msg_thinking)
+                if msg_thinking:
+                    event = {"type": "thinking", "content": msg_thinking}
+                    if self._remember_stream_event(event) and bubble is not None:
+                        bubble.add_body_event(event)
 
                 if isinstance(raw_content, list):
                     for part in raw_content:
                         if not isinstance(part, dict):
                             continue
                         thinking_text = _extract_thinking_from_content_part(part)
-                        if thinking_text and bubble is not None:
-                            bubble.append_thinking_delta(thinking_text)
+                        if thinking_text:
+                            event = {"type": "thinking", "content": thinking_text}
+                            if self._remember_stream_event(event) and bubble is not None:
+                                bubble.add_body_event(event)
                         if part.get("type") == "tool_use":
                             tool_name = part.get("name", "")
                             tool_input = part.get("input", {})
-                            if bubble is not None:
-                                bubble.add_tool_call(tool_name, tool_input)
+                            event = {
+                                "type": "call",
+                                "tool_name": tool_name,
+                                "input": tool_input,
+                            }
+                            if self._remember_stream_event(event) and bubble is not None:
+                                bubble.add_body_event(event)
 
             elif msg_type == "user":
                 tool_result_info = entry.get("toolUseResult")
@@ -2142,8 +2199,14 @@ class ChatPage(QWidget):
                                     result_text = resp.get("output", str(resp))
                                 elif isinstance(c, str):
                                     result_text = c
-                    if bubble is not None:
-                        bubble.add_tool_result(tool_name, status, result_text)
+                    event = {
+                        "type": "result",
+                        "tool_name": tool_name,
+                        "status": status,
+                        "content": result_text,
+                    }
+                    if self._remember_stream_event(event) and bubble is not None:
+                        bubble.add_body_event(event)
 
         if not detached:
             self._display.scroll_to_bottom()
@@ -2167,6 +2230,9 @@ class ChatPage(QWidget):
         if not self._worker_detached:
             self._display.end_streaming()
             self._display.add_system_message(f"❌ {err}")
+            self._finalize_response_timing()
+        else:
+            self._finalize_response_timing()
         self._cleanup_worker()
         self._worker_detached = False
 
@@ -2201,23 +2267,16 @@ class ChatPage(QWidget):
                 or getattr(self, "_tool_monitor_sid", "")
             )
             if worker_sid and session_id == worker_sid:
-                # 切回正在流式输出的会话 —— 重新附加
+                # 切回正在流式输出的会话：先恢复历史，再接回流式输出
                 self._worker_detached = False
                 self._current_session_id = session_id
-                self._display.clear_all()
-                self._display.add_system_message(
-                    f"🔄 已恢复会话 {session_id[-12:]}"
-                )
-                self._display.add_user_message(self._worker_user_msg)
-                self._display.begin_streaming()
-                if self._streaming_text:
-                    self._display.set_streaming_text(self._streaming_text)
+                self._pending_live_reattach_session_id = session_id
                 self._set_current_session_title(session_id)
                 self._set_busy(True)
-                return
             else:
                 # 切到别的会话，将当前 worker 标记为脱离
                 self._worker_detached = True
+                self._pending_live_reattach_session_id = ""
                 self._set_busy(False)
 
         self._cleanup_session_loader()
@@ -2371,7 +2430,26 @@ class ChatPage(QWidget):
                 self._populate_model_combo(selected_model)
             # 历史恢复结束后仅做一次全量宽度与滚动更新
             self._display._update_bubble_widths()
-            self._display.add_system_message("💡 继续发送消息将在此会话基础上对话")
+            worker_sid = self._worker_session_id or getattr(self, "_tool_monitor_sid", "")
+            is_live_session = bool(
+                self._worker is not None
+                and not self._worker_detached
+                and sid
+                and worker_sid == sid
+            )
+            if (
+                is_live_session
+                and sid
+                and self._pending_live_reattach_session_id == sid
+            ):
+                self._display.begin_streaming()
+                if self._streaming_text:
+                    self._display.set_streaming_text(self._streaming_text)
+                self._replay_stream_backlog(self._display.get_streaming_bubble())
+                self._set_busy(True)
+                self._pending_live_reattach_session_id = ""
+            else:
+                self._display.add_system_message("💡 继续发送消息将在此会话基础上对话")
             self._display.scroll_to_bottom()
             return
 

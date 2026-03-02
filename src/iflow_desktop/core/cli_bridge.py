@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import subprocess
 import time
 import importlib.util
@@ -182,9 +183,50 @@ class CLIBridge:
     # ------------------------------------------------------------------
     @staticmethod
     def _get_iflow_cmd() -> str:
-        """获取 iflow 命令路径。"""
+        """获取 iflow 命令路径（带多候选回退，避免 Windows 误判未安装）。"""
         cfg = CLIBridge.load_bot_config()
-        return cfg.get("driver", {}).get("iflow_path", "iflow")
+        configured = str(cfg.get("driver", {}).get("iflow_path", "")).strip()
+
+        candidates: list[str] = []
+        if configured:
+            candidates.append(configured)
+            p = Path(configured).expanduser()
+            suffix = p.suffix.lower()
+            if suffix == ".ps1":
+                candidates.append(str(p.with_suffix(".cmd")))
+                candidates.append(str(p.with_suffix(".exe")))
+            elif not suffix:
+                candidates.append(configured + ".cmd")
+                candidates.append(configured + ".exe")
+
+        candidates.extend(["iflow", "iflow.cmd", "iflow.exe"])
+
+        if platform.system() == "Windows":
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                npm_bin = Path(appdata) / "npm"
+                candidates.extend([
+                    str(npm_bin / "iflow.cmd"),
+                    str(npm_bin / "iflow.exe"),
+                    str(npm_bin / "iflow"),
+                ])
+
+        seen: set[str] = set()
+        for raw in candidates:
+            c = str(raw or "").strip()
+            if not c or c in seen:
+                continue
+            seen.add(c)
+
+            resolved = shutil.which(c)
+            if resolved:
+                return resolved
+
+            p = Path(c).expanduser()
+            if p.exists():
+                return str(p)
+
+        return configured or "iflow"
 
     # ------------------------------------------------------------------
     # iflow-bot 配置 (bot 服务专用)
@@ -239,11 +281,14 @@ class CLIBridge:
     def load_bot_config() -> dict:
         path = CLIBridge.get_bot_config_path()
         if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+            for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "cp936"):
+                try:
+                    with open(path, "r", encoding=enc) as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+                except Exception:
+                    continue
         return {}
 
     @staticmethod
@@ -423,6 +468,13 @@ class CLIBridge:
         CLIBridge._models_cache_time = 0
         CLIBridge._models_with_source_cache = []
         CLIBridge._models_with_source_cache_time = 0
+
+    @staticmethod
+    def invalidate_session_caches() -> None:
+        """清空会话相关缓存，工作区切换时调用。"""
+        CLIBridge._session_brief_cache.clear()
+        CLIBridge._session_list_cache.clear()
+        CLIBridge._session_messages_cache.clear()
 
     @staticmethod
     def get_iflow_models_with_source() -> list[dict]:
@@ -1303,30 +1355,124 @@ class CLIBridge:
     # Gateway 管理
     # ------------------------------------------------------------------
     @staticmethod
-    def is_gateway_running() -> tuple[bool, Optional[int]]:
-        pid_file = CLIBridge.get_pid_file()
-        if not pid_file.exists():
-            return False, None
+    def _get_gateway_port() -> int:
+        """获取网关监听端口（默认 8090）。"""
+        cfg = CLIBridge.load_bot_config()
+        raw = cfg.get("driver", {}).get("acp_port", 8090)
         try:
-            pid = int(pid_file.read_text().strip())
+            port = int(raw)
+        except Exception:
+            port = 8090
+        if port <= 0 or port > 65535:
+            port = 8090
+        return port
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """跨平台检查进程是否存活。"""
+        if pid <= 0:
+            return False
+        try:
             if platform.system() == "Windows":
                 kw = _subprocess_kwargs(capture=True)
-                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], **kw)
-                # tasklist /NH: 如果进程存在会输出进程名+PID行
-                # 如果不存在则输出 "信息: 没有运行的任务匹配..." 
+                result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], timeout=6, **kw)
                 out = _decode(result.stdout).strip()
                 for line in out.splitlines():
-                    line_stripped = line.strip()
-                    # 进程存在时输出类似 "python.exe  12345 Console ..."
-                    if line_stripped and str(pid) in line_stripped:
-                        # 排除 "信息:" 行
-                        if not line_stripped.startswith("信息") and not line_stripped.startswith("INFO"):
-                            return True, pid
-            else:
-                os.kill(pid, 0)
-                return True, pid
+                    line = line.strip()
+                    if not line or line.startswith(("信息", "INFO")):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) == pid:
+                        return True
+                return False
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _find_listening_pids_by_port(port: int) -> list[int]:
+        """查找正在监听指定端口的 PID 列表。"""
+        if port <= 0:
+            return []
+
+        pids: list[int] = []
+        seen: set[int] = set()
+
+        if platform.system() == "Windows":
+            try:
+                kw = _subprocess_kwargs(capture=True)
+                r = subprocess.run(["netstat", "-ano", "-p", "tcp"], timeout=10, **kw)
+                text = _decode(r.stdout) if r.stdout else ""
+                for raw in text.splitlines():
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    # 典型格式: TCP 0.0.0.0:8090 0.0.0.0:0 LISTENING 1234
+                    if len(parts) < 5:
+                        continue
+                    state = parts[3].upper()
+                    if state != "LISTENING":
+                        continue
+                    local_addr = parts[1]
+                    if not local_addr.endswith(f":{port}"):
+                        continue
+                    pid_raw = parts[-1]
+                    if not pid_raw.isdigit():
+                        continue
+                    pid = int(pid_raw)
+                    if pid > 0 and pid not in seen:
+                        seen.add(pid)
+                        pids.append(pid)
+            except Exception:
+                pass
+            return pids
+
+        # 非 Windows：尽量用 lsof 获取 PID
+        try:
+            kw = _subprocess_kwargs(capture=True)
+            r = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10, **kw)
+            text = _decode(r.stdout) if r.stdout else ""
+            for line in text.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                if parts[1].isdigit():
+                    pid = int(parts[1])
+                    if pid > 0 and pid not in seen:
+                        seen.add(pid)
+                        pids.append(pid)
         except Exception:
             pass
+        return pids
+
+    @staticmethod
+    def is_gateway_running() -> tuple[bool, Optional[int]]:
+        pid_file = CLIBridge.get_pid_file()
+        # 1) 先看 PID 文件（快路径）
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                if CLIBridge._is_pid_alive(pid):
+                    return True, pid
+                # PID 文件陈旧，清理后继续端口探测
+                pid_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        # 2) 端口探测：兼容手动启动/多实例/无 PID 文件
+        port = CLIBridge._get_gateway_port()
+        pids = CLIBridge._find_listening_pids_by_port(port)
+        if pids:
+            chosen_pid = pids[0]
+            try:
+                pid_file.parent.mkdir(parents=True, exist_ok=True)
+                pid_file.write_text(str(chosen_pid), encoding="utf-8")
+            except Exception:
+                pass
+            return True, chosen_pid
+
         return False, None
 
     @staticmethod
@@ -1453,8 +1599,14 @@ class CLIBridge:
     @staticmethod
     def _workspace_to_project_name(workspace: str) -> str:
         """将工作空间路径转换为 iflow 项目名。"""
-        ws_path = Path(workspace).resolve()
-        name = str(ws_path).replace("\\", "-").replace("/", "-").replace(":", "")
+        try:
+            ws_path = Path(workspace).expanduser().resolve()
+        except Exception:
+            ws_path = Path(workspace).expanduser()
+
+        name = str(ws_path).replace("\\", "-").replace("/", "-").replace(":", "-")
+        name = re.sub(r"\s+", "-", name)
+        name = re.sub(r"-+", "-", name).strip("-")
         if not name.startswith("-"):
             name = "-" + name
         return name
