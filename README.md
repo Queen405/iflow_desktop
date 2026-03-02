@@ -1,6 +1,7 @@
 # iFlow Bot Desktop
 
 🤖 iFlow Bot 桌面客户端 — 基于 PySide6 (Qt) 的原生图形化管理界面。
+基于开源项目iflow-bot，提供对iFlow CLI和Gateway的可视化管理，支持模型配置、会话管理、定时任务调度等功能。
 
 ## 功能
 
