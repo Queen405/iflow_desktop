@@ -89,15 +89,6 @@ iflow-desktop/
 - 定时任务: `~/.iflow-bot/data/cron/jobs.json`
 - Gateway 日志: `~/.iflow-bot/gateway.log`
 
-## 打包为可执行文件
-
-可使用 PyInstaller 打包为独立可执行文件:
-
-```bash
-pip install pyinstaller
-pyinstaller --name "iFlow Desktop" --windowed --onefile src/iflow_desktop/app.py
-```
-
 ## 技术栈
 
 - **PySide6** (Qt 6) — 原生桌面 GUI 框架
