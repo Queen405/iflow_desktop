@@ -1592,35 +1592,85 @@ class CLIBridge:
     @staticmethod
     def set_chat_workspace(workspace: str) -> str:
         """设置对话工作空间路径并返回最终保存的绝对路径。"""
-        ws = str(Path(workspace).expanduser().resolve())
+        ws = str(Path(os.path.abspath(str(Path(workspace).expanduser()))))
         IFlowSettings.set_chat_workspace(ws)
         return ws
 
     @staticmethod
     def _workspace_to_project_name(workspace: str) -> str:
-        """将工作空间路径转换为 iflow 项目名。"""
-        try:
-            ws_path = Path(workspace).expanduser().resolve()
-        except Exception:
-            ws_path = Path(workspace).expanduser()
+        """将工作空间路径转换为 iflow 项目名（与 iflow CLI 当前规则一致）。
 
+        CLI 规则: /[^\\p{L}\\p{N}\\-_.]/gu（保留 Unicode 字母/数字含中文，其余→'-'）。
+        """
+        ws_path = Path(os.path.abspath(str(Path(workspace).expanduser())))
         name = str(ws_path).replace("\\", "-").replace("/", "-").replace(":", "-")
         name = re.sub(r"\s+", "-", name)
+        name = "".join(ch if (ch.isalnum() or ch in "-_.") else "-" for ch in name)
         name = re.sub(r"-+", "-", name).strip("-")
-        if not name.startswith("-"):
-            name = "-" + name
-        return name
+        return f"-{name}" if name else "-root"
+
+    @staticmethod
+    def _workspace_to_project_name_legacy(workspace: str) -> str:
+        """旧版 ASCII-only 目录名（用于兼容旧版 CLI 创建的会话目录）。
+
+        旧版代码查除首部 '-'、保留尾部，可能生成如 '-E-15732-Desktop-ai-' 的名称。
+        """
+        ws_path = Path(os.path.abspath(str(Path(workspace).expanduser())))
+        name = str(ws_path).replace("\\", "-").replace("/", "-").replace(":", "-")
+        name = re.sub(r"\s+", "-", name)
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", name)
+        name = re.sub(r"-+", "-", name).lstrip("-")
+        return f"-{name}" if name else "-root"
+
+    @staticmethod
+    def _get_candidate_session_dirs(workspace: str | None = None) -> list[Path]:
+        """返回当前工作区所有候选 session 目录（去重，Unicode 主目录在前）。
+
+        同时尝试旧版 lstrip 和 full-strip 两种变体，尽量覆盖不同旧版创建的目录名。
+        """
+        ws = workspace or CLIBridge.get_chat_workspace()
+        projects_root = IFlowSettings.get_dir() / "projects"
+        primary = projects_root / CLIBridge._workspace_to_project_name(ws)
+        legacy = projects_root / CLIBridge._workspace_to_project_name_legacy(ws)
+        # 全 strip 变体（防止某些旧版术双向 strip）
+        ws_path = Path(os.path.abspath(str(Path(ws).expanduser())))
+        _n = str(ws_path).replace("\\", "-").replace("/", "-").replace(":", "-")
+        _n = re.sub(r"\s+", "-", _n)
+        _n = re.sub(r"[^A-Za-z0-9._-]", "-", _n)
+        _n = re.sub(r"-+", "-", _n).strip("-")
+        legacy_full_strip = projects_root / (f"-{_n}" if _n else "-root")
+
+        seen: list[Path] = []
+        for d in [primary, legacy, legacy_full_strip]:
+            if str(d) not in [str(x) for x in seen]:
+                seen.append(d)
+        return seen
+
+    @staticmethod
+    def find_session_file(session_id: str) -> Path | None:
+        """在所有候选 session 目录中查找指定 session 文件，返回 Path 或 None。"""
+        if not session_id:
+            return None
+        for d in CLIBridge._get_candidate_session_dirs():
+            sf = d / f"{session_id}.jsonl"
+            if sf.exists():
+                return sf
+        return None
 
     # ------------------------------------------------------------------
     # 会话管理 (iflow 原生 session)
     # ------------------------------------------------------------------
     @staticmethod
     def get_chat_sessions_dir() -> Path:
-        """获取对话使用的 sessions 目录（基于 chat workspace）。"""
-        project_name = CLIBridge._workspace_to_project_name(
-            CLIBridge.get_chat_workspace()
-        )
-        return IFlowSettings.get_dir() / "projects" / project_name
+        """获取对话使用的 sessions 目录（基于 chat workspace）。
+
+        返回当前 CLI 规则对应的主目录（Unicode 名）。新建会话时 CLI 会写入该目录。
+        读取历史会话请用 list_iflow_sessions()，它会自动合并所有候选目录。
+        """
+        workspace = CLIBridge.get_chat_workspace()
+        projects_root = IFlowSettings.get_dir() / "projects"
+        primary = projects_root / CLIBridge._workspace_to_project_name(workspace)
+        return primary
 
     @staticmethod
     def _parse_session_brief(sf: Path, stat) -> dict | None:
@@ -1670,25 +1720,39 @@ class CLIBridge:
 
     @staticmethod
     def list_iflow_sessions() -> list[dict]:
-        """列出所有 iflow 会话，解析摘要。"""
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        if not sessions_dir.exists():
-            return []
+        """列出所有 iflow 会话，解析摘要。
 
-        dir_key = str(sessions_dir)
+        会自动合并当前工作区所有候选目录（Unicode 主目录 + 旧版 ASCII 目录），
+        以确保中文路径旧版历史会话和新建会话都能正确显示。
+        """
+        candidate_dirs = CLIBridge._get_candidate_session_dirs()
+
+        # 构建合并签名（=所有目录存在的文件的(名,mtime,size)元组集合）
         file_stats: list[tuple[Path, object]] = []
         signature_parts: list[tuple[str, int, int]] = []
+        seen_ids: set[str] = set()
 
-        for sf in sorted(sessions_dir.glob("session-*.jsonl"), key=lambda p: p.name):
-            try:
-                stat = sf.stat()
-            except Exception:
+        for sessions_dir in candidate_dirs:
+            if not sessions_dir.exists():
                 continue
-            file_stats.append((sf, stat))
-            signature_parts.append((sf.name, int(stat.st_mtime_ns), int(stat.st_size)))
+            for sf in sorted(sessions_dir.glob("session-*.jsonl"), key=lambda p: p.name):
+                sid = sf.stem
+                if sid in seen_ids:
+                    continue  # 同名 session 只取先扫到的（主目录优先）
+                seen_ids.add(sid)
+                try:
+                    stat = sf.stat()
+                except Exception:
+                    continue
+                file_stats.append((sf, stat))
+                signature_parts.append((str(sf), int(stat.st_mtime_ns), int(stat.st_size)))
 
+        if not file_stats:
+            return []
+
+        composite_key = "|".join(str(d) for d in candidate_dirs)
         signature = tuple(signature_parts)
-        cached_list = CLIBridge._session_list_cache.get(dir_key)
+        cached_list = CLIBridge._session_list_cache.get(composite_key)
         if cached_list and cached_list.get("signature") == signature:
             return list(cached_list.get("sessions", []))
 
@@ -1716,7 +1780,7 @@ class CLIBridge:
             sessions.append(dict(parsed))
 
         sessions.sort(key=lambda x: x["modified"], reverse=True)
-        CLIBridge._session_list_cache[dir_key] = {
+        CLIBridge._session_list_cache[composite_key] = {
             "signature": signature,
             "sessions": [dict(item) for item in sessions],
         }
@@ -1725,9 +1789,8 @@ class CLIBridge:
     @staticmethod
     def load_session_messages(session_id: str) -> list[dict]:
         """加载会话完整消息列表。"""
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        session_file = sessions_dir / f"{session_id}.jsonl"
-        if not session_file.exists():
+        session_file = CLIBridge.find_session_file(session_id)
+        if session_file is None:
             return []
 
         try:
@@ -1919,15 +1982,18 @@ class CLIBridge:
         """删除 iflow CLI 会话文件。"""
         if not session_id:
             return False
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        session_file = sessions_dir / f"{session_id}.jsonl"
-        if not session_file.exists():
+        session_file = CLIBridge.find_session_file(session_id)
+        if session_file is None:
             return False
         try:
+            sessions_dir = session_file.parent
             session_file.unlink()
             cache_key = str(session_file)
             CLIBridge._session_brief_cache.pop(cache_key, None)
             CLIBridge._session_messages_cache.pop(cache_key, None)
+            # 清除所有候选目录的列表缓存
+            composite_key = "|".join(str(d) for d in CLIBridge._get_candidate_session_dirs())
+            CLIBridge._session_list_cache.pop(composite_key, None)
             CLIBridge._session_list_cache.pop(str(sessions_dir), None)
             return True
         except Exception:

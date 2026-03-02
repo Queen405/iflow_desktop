@@ -3,6 +3,7 @@
 from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
+import os
 import json
 import time
 
@@ -1596,10 +1597,7 @@ class ChatPage(QWidget):
     def _apply_chat_workspace(self, workspace: str, announce: bool = True):
         if not workspace:
             return
-        try:
-            resolved = str(Path(workspace).expanduser().resolve())
-        except Exception:
-            resolved = str(Path(workspace).expanduser())
+        resolved = str(Path(os.path.abspath(str(Path(workspace).expanduser()))))
 
         if resolved == self._chat_workspace:
             return
@@ -1927,22 +1925,25 @@ class ChatPage(QWidget):
         QTimer.singleShot(500, self._session_panel.refresh)
 
     def _detect_new_session_id(self) -> str:
-        """发送首条消息后，检测 iflow CLI 新创建的 session ID 并返回（不修改状态）。"""
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        if not sessions_dir.exists():
-            return ""
-        # 查找发送开始之后被修改的最新 session 文件
+        """发送首条消息后，检测 iflow CLI 新创建的 session ID 并返回（不修改状态）。
+
+        扫描所有候选目录（Unicode 主目录 + 旧版 ASCII 目录），确保中文路径工作区
+        下新会话也能被正确检测到。
+        """
         send_ts = getattr(self, "_send_timestamp", 0)
         best_file: Path | None = None
         best_mtime: float = 0
-        for sf in sessions_dir.glob("session-*.jsonl"):
-            try:
-                mt = sf.stat().st_mtime
-                if mt >= send_ts and mt > best_mtime:
-                    best_mtime = mt
-                    best_file = sf
-            except Exception:
+        for sessions_dir in CLIBridge._get_candidate_session_dirs():
+            if not sessions_dir.exists():
                 continue
+            for sf in sessions_dir.glob("session-*.jsonl"):
+                try:
+                    mt = sf.stat().st_mtime
+                    if mt >= send_ts and mt > best_mtime:
+                        best_mtime = mt
+                        best_file = sf
+                except Exception:
+                    continue
         return best_file.stem if best_file else ""
 
     def _extract_final_thinking(self):
@@ -1967,9 +1968,8 @@ class ChatPage(QWidget):
                 bubble.add_thinking(tb)
             return
 
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        sf = sessions_dir / f"{sid}.jsonl"
-        if not sf.exists():
+        sf = CLIBridge.find_session_file(sid)
+        if sf is None or not sf.exists():
             return
 
         try:
@@ -2080,9 +2080,8 @@ class ChatPage(QWidget):
         if not sid:
             return
 
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        sf = sessions_dir / f"{sid}.jsonl"
-        if not sf.exists():
+        sf = CLIBridge.find_session_file(sid)
+        if sf is None or not sf.exists():
             return
 
         try:
@@ -2216,9 +2215,8 @@ class ChatPage(QWidget):
         sid = self._current_session_id
         if not sid:
             return 0
-        sessions_dir = CLIBridge.get_chat_sessions_dir()
-        sf = sessions_dir / f"{sid}.jsonl"
-        if not sf.exists():
+        sf = CLIBridge.find_session_file(sid)
+        if sf is None or not sf.exists():
             return 0
         try:
             return sf.stat().st_size
