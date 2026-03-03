@@ -400,6 +400,18 @@ class CLIBridge:
         return None
 
     @staticmethod
+    def _build_iflow_bot_env(base_env: dict | None) -> dict:
+        """构建 iflow-bot 子进程环境，统一 UTF-8 输出，避免 Windows 控制台编码异常。"""
+        env = dict(base_env) if isinstance(base_env, dict) else os.environ.copy()
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        if platform.system() == "Windows":
+            env["PYTHONLEGACYWINDOWSSTDIO"] = "1"
+            env.setdefault("NO_COLOR", "1")
+            env.setdefault("TERM", "dumb")
+        return env
+
+    @staticmethod
     def check_iflow_logged_in() -> bool:
         """检查是否已登录（有 API key 或有项目文件）。"""
         settings = IFlowSettings.load()
@@ -1476,9 +1488,35 @@ class CLIBridge:
         return False, None
 
     @staticmethod
+    def _normalize_bot_config_before_start() -> tuple[bool, str]:
+        """启动前规范化 ~/.iflow-bot/config.json，避免 BOM/编码导致 iflow-bot 读取失败。"""
+        config_path = CLIBridge.get_bot_config_path()
+        if not config_path.exists():
+            return False, "启动失败：未找到 iflow-bot 配置文件（~/.iflow-bot/config.json）。请先保存 Bot 配置并启用至少一个渠道。"
+
+        try:
+            raw = CLIBridge._read_text_with_fallback(config_path)
+            text = raw.lstrip("\ufeff").strip()
+            cfg = json.loads(text) if text else {}
+            if not isinstance(cfg, dict):
+                return False, "启动失败：iflow-bot 配置文件格式错误（应为 JSON 对象）。"
+            CLIBridge.save_bot_config(cfg)
+            return True, ""
+        except Exception as e:
+            return False, f"启动失败：iflow-bot 配置文件解析失败，请检查 ~/.iflow-bot/config.json。详细信息: {e}"
+
+    @staticmethod
     def start_gateway() -> tuple[bool, str]:
         """启动 Gateway。自动检测 iflow-bot 安装方式并校验结果。"""
         try:
+            ok, normalize_msg = CLIBridge._normalize_bot_config_before_start()
+            if not ok:
+                return False, normalize_msg
+
+            enabled_channels = CLIBridge.get_enabled_channels()
+            if not enabled_channels:
+                return False, "启动失败：当前未启用任何渠道。请在“渠道配置”里至少启用一个渠道后再启动网关。"
+
             execution = CLIBridge._get_iflow_bot_execution()
             if execution is None:
                 return False, (
@@ -1491,20 +1529,40 @@ class CLIBridge:
 
             base_cmd, cmd_cwd, cmd_env = execution
             kw = _subprocess_kwargs(capture=True, cwd=cmd_cwd)
-            if cmd_env is not None:
-                kw["env"] = cmd_env
+            kw["env"] = CLIBridge._build_iflow_bot_env(cmd_env)
             result = subprocess.run([*base_cmd, "gateway", "start"], timeout=30, **kw)
+            stdout_text = _decode(result.stdout).strip()
+            stderr_text = _decode(result.stderr).strip()
+            detail_text = "\n".join([t for t in [stderr_text, stdout_text] if t]).strip()
+
+            running, pid = False, None
+            for _ in range(5):
+                time.sleep(1)
+                running, pid = CLIBridge.is_gateway_running()
+                if running:
+                    break
+
+            if running:
+                if result.returncode != 0 and detail_text:
+                    return True, f"Gateway 已启动 (PID: {pid})，但启动输出包含告警：\n{detail_text}"
+                return True, f"Gateway 已启动 (PID: {pid})"
+
             if result.returncode != 0:
-                stdout_text = _decode(result.stdout).strip()
-                stderr_text = _decode(result.stderr).strip()
                 detail = stderr_text or stdout_text or "未知错误"
                 return False, f"启动失败: {detail}"
 
-            time.sleep(1)
-            running, pid = CLIBridge.is_gateway_running()
-            if running:
-                return True, f"Gateway 已启动 (PID: {pid})"
-            return True, "Gateway 启动命令执行完成，请查看日志确认运行状态。"
+            lowered = detail_text.lower()
+            if (
+                "no channels are enabled" in lowered
+                or "invalid config file" in lowered
+                or "traceback" in lowered
+                or "error" in lowered
+            ):
+                return False, f"启动失败: {detail_text}"
+
+            if detail_text:
+                return False, f"启动失败：启动命令已执行，但网关未进入运行状态。输出信息:\n{detail_text}"
+            return False, "启动失败：启动命令已执行，但网关未进入运行状态。请检查渠道配置和日志。"
         except Exception as e:
             return False, f"启动失败: {e}"
 
@@ -1516,8 +1574,7 @@ class CLIBridge:
             if execution is not None:
                 base_cmd, cmd_cwd, cmd_env = execution
                 kw = _subprocess_kwargs(capture=True, cwd=cmd_cwd)
-                if cmd_env is not None:
-                    kw["env"] = cmd_env
+                kw["env"] = CLIBridge._build_iflow_bot_env(cmd_env)
                 r = subprocess.run([*base_cmd, "gateway", "stop"], timeout=20, **kw)
                 if r.returncode == 0:
                     pid_file.unlink(missing_ok=True)

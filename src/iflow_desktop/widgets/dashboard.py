@@ -6,7 +6,7 @@ from datetime import datetime
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
-    QFrame, QScrollArea,
+    QFrame,
 )
 from PySide6.QtCore import Qt
 
@@ -126,12 +126,7 @@ class DashboardPage(QWidget):
         )
 
     def _init_ui(self):
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-
-        container = QWidget()
-        main_layout = QVBoxLayout(container)
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(32, 24, 32, 24)
         main_layout.setSpacing(20)
 
@@ -188,8 +183,3 @@ class DashboardPage(QWidget):
 
         main_layout.addLayout(btn_row)
         main_layout.addStretch()
-
-        scroll.setWidget(container)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)

@@ -199,62 +199,82 @@ class BotManagerPage(QWidget):
     # Gateway Tab
     # ------------------------------------------------------------------
     def _create_gateway_tab(self) -> QWidget:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
+        page = QWidget()
+        layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(16)
 
-        # 状态卡片
+        # 上方：运行状态栏（横向卡片）
         status_card = QFrame()
         status_card.setObjectName("Card")
-        sc_layout = QVBoxLayout(status_card)
+        sc_layout = QHBoxLayout(status_card)
+        sc_layout.setContentsMargins(20, 16, 20, 16)
+        sc_layout.setSpacing(24)
+
+        # 状态信息区
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(4)
 
         sc_title = QLabel("运行状态")
         sc_title.setObjectName("CardTitle")
-        sc_layout.addWidget(sc_title)
+        info_layout.addWidget(sc_title)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(16)
 
         self._gw_status = QLabel("检测中...")
-        self._gw_status.setStyleSheet("font-size: 15px; padding: 8px 0;")
-        sc_layout.addWidget(self._gw_status)
+        self._gw_status.setStyleSheet("font-size: 14px;")
+        status_row.addWidget(self._gw_status)
 
         self._ch_label = QLabel("")
         self._ch_label.setObjectName("CardValue")
-        sc_layout.addWidget(self._ch_label)
+        self._ch_label.setStyleSheet("font-size: 14px;")
+        status_row.addWidget(self._ch_label)
+        status_row.addStretch()
+
+        info_layout.addLayout(status_row)
+        sc_layout.addLayout(info_layout, 1)
+
+        # 分隔线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet("color: #3a3a5a;")
+        sc_layout.addWidget(sep)
+
+        # 操作按钮区
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+
+        self._start_btn = QPushButton("▶  启动")
+        self._start_btn.setObjectName("SuccessBtn")
+        self._start_btn.setFixedHeight(36)
+        self._start_btn.setMinimumWidth(100)
+        self._start_btn.clicked.connect(self._start_gateway)
+        btn_layout.addWidget(self._start_btn)
+
+        self._stop_btn = QPushButton("⏹  停止")
+        self._stop_btn.setObjectName("DangerBtn")
+        self._stop_btn.setFixedHeight(36)
+        self._stop_btn.setMinimumWidth(100)
+        self._stop_btn.clicked.connect(self._stop_gateway)
+        btn_layout.addWidget(self._stop_btn)
+
+        restart_btn = QPushButton("🔄  重启")
+        restart_btn.setFixedHeight(36)
+        restart_btn.setMinimumWidth(100)
+        restart_btn.clicked.connect(self._restart_gateway)
+        btn_layout.addWidget(restart_btn)
+
+        sc_layout.addLayout(btn_layout)
 
         layout.addWidget(status_card)
 
-        # 操作按钮
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-
-        self._start_btn = QPushButton("▶  启动网关")
-        self._start_btn.setObjectName("SuccessBtn")
-        self._start_btn.setFixedHeight(40)
-        self._start_btn.clicked.connect(self._start_gateway)
-        btn_row.addWidget(self._start_btn)
-
-        self._stop_btn = QPushButton("⏹  停止网关")
-        self._stop_btn.setObjectName("DangerBtn")
-        self._stop_btn.setFixedHeight(40)
-        self._stop_btn.clicked.connect(self._stop_gateway)
-        btn_row.addWidget(self._stop_btn)
-
-        restart_btn = QPushButton("🔄  重启网关")
-        restart_btn.setFixedHeight(40)
-        restart_btn.clicked.connect(self._restart_gateway)
-        btn_row.addWidget(restart_btn)
-
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        # 配置编辑器
+        # 下方：配置表单（左右两列）
         config_card = QFrame()
         config_card.setObjectName("Card")
         cc_layout = QVBoxLayout(config_card)
+        cc_layout.setContentsMargins(20, 16, 20, 16)
+        cc_layout.setSpacing(16)
 
         cc_title = QLabel("iflow-bot 配置")
         cc_title.setObjectName("CardTitle")
@@ -264,8 +284,12 @@ class BotManagerPage(QWidget):
         cc_path.setObjectName("CardLabel")
         cc_layout.addWidget(cc_path)
 
+        # 两列表单布局
         cfg_grid = QGridLayout()
+        cfg_grid.setHorizontalSpacing(24)
+        cfg_grid.setVerticalSpacing(12)
 
+        # 左列
         cfg_grid.addWidget(QLabel("通信模式:"), 0, 0)
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(["stdio", "cli", "acp"])
@@ -276,7 +300,8 @@ class BotManagerPage(QWidget):
         self._iflow_path_edit.setPlaceholderText("iflow")
         cfg_grid.addWidget(self._iflow_path_edit, 1, 1)
 
-        cfg_grid.addWidget(QLabel("工作空间:"), 2, 0)
+        # 右列
+        cfg_grid.addWidget(QLabel("工作空间:"), 0, 2)
         ws_row = QHBoxLayout()
         self._workspace_edit = QLineEdit()
         ws_row.addWidget(self._workspace_edit)
@@ -284,43 +309,29 @@ class BotManagerPage(QWidget):
         ws_browse.setFixedWidth(40)
         ws_browse.clicked.connect(self._browse_workspace)
         ws_row.addWidget(ws_browse)
-        cfg_grid.addLayout(ws_row, 2, 1)
+        cfg_grid.addLayout(ws_row, 0, 3)
 
         self._yolo_cb = QCheckBox("YOLO 模式 (自动确认)")
-        cfg_grid.addWidget(self._yolo_cb, 3, 0, 1, 2)
+        cfg_grid.addWidget(self._yolo_cb, 1, 2, 1, 2)
 
         cc_layout.addLayout(cfg_grid)
 
-        save_cfg_btn = QPushButton("💾  保存 Bot 配置")
+        # 保存按钮
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save_cfg_btn = QPushButton("💾  保存配置")
         save_cfg_btn.setObjectName("PrimaryBtn")
         save_cfg_btn.setFixedHeight(36)
+        save_cfg_btn.setFixedWidth(140)
         save_cfg_btn.clicked.connect(self._save_bot_config)
-        cc_layout.addWidget(save_cfg_btn)
+        save_row.addWidget(save_cfg_btn)
+        save_row.addStretch()
+        cc_layout.addLayout(save_row)
 
         layout.addWidget(config_card)
-
-        # 命令参考
-        cmd_card = QFrame()
-        cmd_card.setObjectName("Card")
-        cmd_layout = QVBoxLayout(cmd_card)
-        cmd_title = QLabel("命令参考")
-        cmd_title.setObjectName("CardTitle")
-        cmd_layout.addWidget(cmd_title)
-        cmd_text = QLabel(
-            "iflow-bot gateway start      # 后台启动\n"
-            "iflow-bot gateway run         # 前台运行 (debug)\n"
-            "iflow-bot gateway stop        # 停止\n"
-            "iflow-bot status              # 查看状态"
-        )
-        cmd_text.setObjectName("LogViewer")
-        cmd_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        cmd_layout.addWidget(cmd_text)
-
-        layout.addWidget(cmd_card)
         layout.addStretch()
 
-        scroll.setWidget(container)
-        return scroll
+        return page
 
     # ------------------------------------------------------------------
     # Channels Tab
@@ -641,16 +652,28 @@ class BotManagerPage(QWidget):
     # ------------------------------------------------------------------
     # 操作方法
     # ------------------------------------------------------------------
+    def _refresh_gateway_status_now(self):
+        running, pid = CLIBridge.is_gateway_running()
+        data = {
+            "gateway_running": running,
+            "gateway_pid": pid,
+            "enabled_channels": CLIBridge.get_enabled_channels(),
+        }
+        self.on_status_update(data)
+
     def _start_gateway(self):
         ok, msg = CLIBridge.start_gateway()
+        self._refresh_gateway_status_now()
         QMessageBox.information(self, "启动成功" if ok else "启动失败", msg)
 
     def _stop_gateway(self):
         ok, msg = CLIBridge.stop_gateway()
+        self._refresh_gateway_status_now()
         QMessageBox.information(self, "操作结果", msg)
 
     def _restart_gateway(self):
         ok, msg = CLIBridge.restart_gateway()
+        self._refresh_gateway_status_now()
         QMessageBox.information(self, "操作结果", msg)
 
     def _save_bot_config(self):

@@ -6,17 +6,40 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QScrollArea, QLineEdit, QComboBox, QCheckBox,
-    QGroupBox, QGridLayout, QMessageBox, QTabWidget,
-    QPlainTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QDialog, QDialogButtonBox, QTextEdit,
-    QFileDialog, QSpinBox, QSplitter,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QFrame,
+    QScrollArea,
+    QLineEdit,
+    QComboBox,
+    QCheckBox,
+    QGroupBox,
+    QGridLayout,
+    QMessageBox,
+    QTabWidget,
+    QPlainTextEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QDialog,
+    QDialogButtonBox,
+    QTextEdit,
+    QFileDialog,
+    QSpinBox,
+    QSplitter,
 )
 from PySide6.QtCore import Qt, QThread, Signal
 
 from iflow_desktop.core.cli_bridge import CLIBridge, IFlowSettings
-from iflow_desktop.core.shared_utils import decode_bytes as _decode, model_display_name, subprocess_kwargs
+from iflow_desktop.core.shared_utils import (
+    decode_bytes as _decode,
+    model_display_name,
+    subprocess_kwargs,
+)
 
 
 # =====================================================================
@@ -50,9 +73,7 @@ class MCPServerDialog(QDialog):
         grid.addWidget(self._command_edit, 1, 1)
 
         grid.addWidget(QLabel("参数:"), 2, 0)
-        self._args_edit = QLineEdit(
-            " ".join(config.get("args", []))
-        )
+        self._args_edit = QLineEdit(" ".join(config.get("args", [])))
         self._args_edit.setPlaceholderText("空格分隔，如: -y @iflow-mcp/server-name")
         grid.addWidget(self._args_edit, 2, 1)
 
@@ -67,9 +88,7 @@ class MCPServerDialog(QDialog):
         self._env_edit.setPlaceholderText("每行一个: KEY=VALUE")
         env = config.get("env", {})
         if env:
-            self._env_edit.setPlainText(
-                "\n".join(f"{k}={v}" for k, v in env.items())
-            )
+            self._env_edit.setPlainText("\n".join(f"{k}={v}" for k, v in env.items()))
         grid.addWidget(self._env_edit, 4, 1)
 
         self._disabled_cb = QCheckBox("禁用此服务器")
@@ -153,6 +172,7 @@ class AgentEditDialog(QDialog):
 # =====================================================================
 class _OnlineFetchWorker(QThread):
     """后台线程加载在线仓库数据，避免阻塞 UI。"""
+
     finished = Signal(dict)  # {items, total} or {error}
 
     def __init__(self, repo_type: str, page: int, size: int, search: str, parent=None):
@@ -165,13 +185,21 @@ class _OnlineFetchWorker(QThread):
     def run(self):
         try:
             if self.repo_type == "agents":
-                result = CLIBridge.fetch_online_agents(self.page, self.size, self.search)
+                result = CLIBridge.fetch_online_agents(
+                    self.page, self.size, self.search
+                )
             elif self.repo_type == "skills":
-                result = CLIBridge.fetch_online_skills(self.page, self.size, self.search)
+                result = CLIBridge.fetch_online_skills(
+                    self.page, self.size, self.search
+                )
             elif self.repo_type == "commands":
-                result = CLIBridge.fetch_online_commands(self.page, self.size, self.search)
+                result = CLIBridge.fetch_online_commands(
+                    self.page, self.size, self.search
+                )
             elif self.repo_type == "mcp":
-                result = CLIBridge.fetch_online_mcp_servers(self.page, self.size, self.search)
+                result = CLIBridge.fetch_online_mcp_servers(
+                    self.page, self.size, self.search
+                )
             else:
                 result = {"items": [], "total": 0}
             self.finished.emit(result)
@@ -194,7 +222,7 @@ class OnlineRepoBrowser(QDialog):
         "commands": "在线命令市场",
         "mcp": "在线 MCP 服务器",
     }
-    _PAGE_SIZE = 15
+    _PAGE_SIZE = 20
 
     def __init__(self, repo_type: str, parent=None):
         super().__init__(parent)
@@ -238,7 +266,8 @@ class OnlineRepoBrowser(QDialog):
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 允许水平滚动（左右拖动查看）
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._table.verticalHeader().setVisible(False)
         self._table.currentCellChanged.connect(self._on_selection_changed)
         left_layout.addWidget(self._table, 1)
@@ -282,7 +311,7 @@ class OnlineRepoBrowser(QDialog):
         right_layout.addWidget(self._install_btn)
 
         splitter.addWidget(right)
-        splitter.setSizes([500, 400])
+        splitter.setSizes([380, 400])
         layout.addWidget(splitter, 1)
 
         # 状态
@@ -293,25 +322,34 @@ class OnlineRepoBrowser(QDialog):
         self._setup_columns()
 
     def _setup_columns(self):
-        if self.repo_type == "mcp":
-            self._table.setColumnCount(4)
-            self._table.setHorizontalHeaderLabels(["名称", "描述", "传输", "语言"])
-        elif self.repo_type == "agents":
-            self._table.setColumnCount(4)
-            self._table.setHorizontalHeaderLabels(["名称", "描述", "类别", "模型"])
-        elif self.repo_type == "skills":
-            self._table.setColumnCount(3)
-            self._table.setHorizontalHeaderLabels(["名称", "描述", "类别"])
-        else:  # commands
-            self._table.setColumnCount(4)
-            self._table.setHorizontalHeaderLabels(["名称", "描述", "类别", "模型"])
+        # 精简列：只显示序号、名称、描述（去掉传输/语言/类别/模型等）
+        self._table.setColumnCount(3)
+        self._table.setHorizontalHeaderLabels(["#", "名称", "描述"])
 
         header = self._table.horizontalHeader()
         header.setSectionsMovable(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for i in range(2, self._table.columnCount()):
-            header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
+
+        # 序号列：固定宽度 50 像素
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        self._table.horizontalHeader().resizeSection(0, 50)
+
+        # 名称列：固定宽度 140 像素
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        self._table.horizontalHeader().resizeSection(1, 140)
+
+        # 描述列：填充剩余空间
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+
+        # 禁止行拖动和调整行高
+        self._table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self._table.setDragEnabled(False)
+        self._table.setDragDropMode(QAbstractItemView.NoDragDrop)
+
+        # 设置行高（更紧凑）
+        self._table.verticalHeader().setDefaultSectionSize(24)
+        # 设置单元格内边距为0，更紧凑
+        self._table.setStyleSheet("QTableWidget::item { padding: 2px 4px; }")
 
     def _fetch_page(self, page: int):
         self._status_label.setText("⏳ 正在加载...")
@@ -323,8 +361,11 @@ class OnlineRepoBrowser(QDialog):
             self._worker.wait(2000)
 
         self._worker = _OnlineFetchWorker(
-            self.repo_type, page, self._PAGE_SIZE,
-            self._search_edit.text().strip(), parent=self
+            self.repo_type,
+            page,
+            self._PAGE_SIZE,
+            self._search_edit.text().strip(),
+            parent=self,
         )
         self._worker.finished.connect(self._on_data_loaded)
         self._worker.start()
@@ -347,35 +388,40 @@ class OnlineRepoBrowser(QDialog):
 
         self._table.setRowCount(len(self._items))
         for i, item in enumerate(self._items):
+            # 序号列
+            seq_num = (self._current_page - 1) * self._PAGE_SIZE + i + 1
+            self._table.setItem(i, 0, QTableWidgetItem(str(seq_num)))
+
+            # 名称列（所有类型统一处理）
             if self.repo_type == "mcp":
-                self._table.setItem(i, 0, QTableWidgetItem(item.get("name", "")))
-                desc = item.get("description", "")
-                self._table.setItem(i, 1, QTableWidgetItem(desc[:60] + "..." if len(desc) > 60 else desc))
-                self._table.setItem(i, 2, QTableWidgetItem(", ".join(item.get("transports", []))))
-                self._table.setItem(i, 3, QTableWidgetItem(", ".join(item.get("languages", []))))
+                name = item.get("name", "")
             elif self.repo_type == "agents":
-                self._table.setItem(i, 0, QTableWidgetItem(item.get("nameZh") or item.get("name", "")))
-                desc = item.get("descriptionZh") or item.get("description", "")
-                self._table.setItem(i, 1, QTableWidgetItem(desc[:60] + "..." if len(desc) > 60 else desc))
-                self._table.setItem(i, 2, QTableWidgetItem(item.get("categoryZh") or item.get("category", "")))
-                self._table.setItem(i, 3, QTableWidgetItem(item.get("modelName", "")))
+                name = item.get("nameZh") or item.get("name", "")
             elif self.repo_type == "skills":
-                self._table.setItem(i, 0, QTableWidgetItem(item.get("name", "")))
-                desc = item.get("description", "")
-                self._table.setItem(i, 1, QTableWidgetItem(desc[:60] + "..." if len(desc) > 60 else desc))
-                self._table.setItem(i, 2, QTableWidgetItem(item.get("category", "")))
+                name = item.get("name", "")
             else:  # commands
-                self._table.setItem(i, 0, QTableWidgetItem(item.get("nameZh") or item.get("name", "")))
+                name = item.get("nameZh") or item.get("name", "")
+            self._table.setItem(i, 1, QTableWidgetItem(name))
+
+            # 描述列（使用完整文本，让表格自动省略）
+            if self.repo_type == "mcp":
+                desc = item.get("description", "")
+            elif self.repo_type == "agents":
                 desc = item.get("descriptionZh") or item.get("description", "")
-                self._table.setItem(i, 1, QTableWidgetItem(desc[:60] + "..." if len(desc) > 60 else desc))
-                self._table.setItem(i, 2, QTableWidgetItem(item.get("category", "")))
-                self._table.setItem(i, 3, QTableWidgetItem(item.get("modelName", "")))
+            elif self.repo_type == "skills":
+                desc = item.get("description", "")
+            else:  # commands
+                desc = item.get("descriptionZh") or item.get("description", "")
+            # 使用完整描述，表格会自动省略过长内容
+            self._table.setItem(i, 2, QTableWidgetItem(desc))
 
         self._preview_title.setText("选择一项查看详情")
         self._preview_text.clear()
         self._install_btn.setEnabled(False)
 
-    def _on_selection_changed(self, row: int, _col: int, _prev_row: int, _prev_col: int):
+    def _on_selection_changed(
+        self, row: int, _col: int, _prev_row: int, _prev_col: int
+    ):
         if row < 0 or row >= len(self._items):
             return
         item = self._items[row]
@@ -436,7 +482,9 @@ class OnlineRepoBrowser(QDialog):
                     lines.append("...(截断)")
         elif self.repo_type == "skills":
             title = item.get("name", "")
-            self._preview_title.setText(f"{title} (ID: {item.get('skillId') or item.get('id', '')})")
+            self._preview_title.setText(
+                f"{title} (ID: {item.get('skillId') or item.get('id', '')})"
+            )
             lines = [
                 f"**名称:** {title}",
                 "",
@@ -506,7 +554,9 @@ class OnlineRepoBrowser(QDialog):
                 config["description"] = desc[:100]
             self.install_requested.emit(self.repo_type, name, config)
         else:
-            name_or_id = str(item.get("name") or item.get("skillId") or item.get("id", ""))
+            name_or_id = str(
+                item.get("name") or item.get("skillId") or item.get("id", "")
+            )
             self.install_requested.emit(self.repo_type, name_or_id, item)
 
 
@@ -589,10 +639,6 @@ class IFlowConfigPage(QWidget):
     # 常规设置 Tab
     # ------------------------------------------------------------------
     def _create_general_tab(self) -> QWidget:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(16)
@@ -662,8 +708,7 @@ class IFlowConfigPage(QWidget):
         layout.addWidget(inst_group)
 
         layout.addStretch()
-        scroll.setWidget(page)
-        return scroll
+        return page
 
     # ------------------------------------------------------------------
     # MCP 服务器 Tab
@@ -674,10 +719,20 @@ class IFlowConfigPage(QWidget):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
 
-        desc = QLabel("管理 MCP (Model Context Protocol) 服务器，为 AI 提供额外工具能力")
+        desc_path_row = QHBoxLayout()
+        desc = QLabel(
+            "管理 MCP (Model Context Protocol) 服务器，为 AI 提供额外工具能力"
+        )
         desc.setObjectName("CardLabel")
         desc.setWordWrap(True)
-        layout.addWidget(desc)
+        desc_path_row.addWidget(desc)
+
+        path_label = QLabel(f"配置路径: {CLIBridge.get_bot_config_path()}")
+        path_label.setObjectName("PageSubtitle")
+        path_label.setAlignment(Qt.AlignRight)
+        path_label.setMaximumWidth(400)
+        desc_path_row.addWidget(path_label)
+        layout.addLayout(desc_path_row)
 
         btn_row = QHBoxLayout()
         add_btn = QPushButton("➕  添加服务器")
@@ -697,16 +752,25 @@ class IFlowConfigPage(QWidget):
         layout.addLayout(btn_row)
 
         self._mcp_table = QTableWidget()
-        self._mcp_table.setColumnCount(5)
-        self._mcp_table.setHorizontalHeaderLabels(["名称", "命令", "状态", "描述", "操作"])
+        self._mcp_table.setColumnCount(6)
+        self._mcp_table.setHorizontalHeaderLabels(
+            ["#", "名称", "命令", "状态", "描述", "操作"]
+        )
         self._mcp_table.horizontalHeader().setStretchLastSection(False)
         self._mcp_table.horizontalHeader().setSectionsMovable(False)
-        self._mcp_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._mcp_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._mcp_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self._mcp_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self._mcp_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
-        self._mcp_table.horizontalHeader().resizeSection(4, 240)
+        self._mcp_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self._mcp_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents
+        )
+        self._mcp_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._mcp_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeToContents
+        )
+        self._mcp_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self._mcp_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
+        self._mcp_table.horizontalHeader().resizeSection(5, 240)
         self._mcp_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._mcp_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._mcp_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -724,17 +788,20 @@ class IFlowConfigPage(QWidget):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
 
+        desc_path_row = QHBoxLayout()
         desc = QLabel("管理已安装的 Skills，Skills 为 AI 提供特定领域的能力")
         desc.setObjectName("CardLabel")
         desc.setWordWrap(True)
-        layout.addWidget(desc)
+        desc_path_row.addWidget(desc)
+
+        path_label = QLabel(f"文件夹路径: {IFlowSettings.get_dir()}/skills")
+        path_label.setObjectName("PageSubtitle")
+        path_label.setAlignment(Qt.AlignRight)
+        path_label.setMaximumWidth(400)
+        desc_path_row.addWidget(path_label)
+        layout.addLayout(desc_path_row)
 
         btn_row = QHBoxLayout()
-        add_btn = QPushButton("➕  安装技能")
-        add_btn.setObjectName("PrimaryBtn")
-        add_btn.clicked.connect(self._install_skill)
-        btn_row.addWidget(add_btn)
-
         browse_btn = QPushButton("🌐  浏览在线仓库")
         browse_btn.clicked.connect(lambda: self._open_online_browser("skills"))
         btn_row.addWidget(browse_btn)
@@ -747,23 +814,26 @@ class IFlowConfigPage(QWidget):
         layout.addLayout(btn_row)
 
         self._skills_table = QTableWidget()
-        self._skills_table.setColumnCount(3)
-        self._skills_table.setHorizontalHeaderLabels(["名称", "路径", "操作"])
+        self._skills_table.setColumnCount(4)
+        self._skills_table.setHorizontalHeaderLabels(["#", "名称", "路径", "操作"])
         self._skills_table.horizontalHeader().setStretchLastSection(False)
         self._skills_table.horizontalHeader().setSectionsMovable(False)
-        self._skills_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._skills_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._skills_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-        self._skills_table.horizontalHeader().resizeSection(2, 120)
+        self._skills_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self._skills_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents
+        )
+        self._skills_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch
+        )
+        self._skills_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self._skills_table.horizontalHeader().resizeSection(3, 120)
         self._skills_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._skills_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._skills_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._skills_table.verticalHeader().setVisible(False)
         layout.addWidget(self._skills_table, 1)
-
-        hint = QLabel("提示：使用 iflow skill add <name-or-id> 从在线仓库安装技能")
-        hint.setObjectName("CardLabel")
-        layout.addWidget(hint)
 
         return page
 
@@ -776,10 +846,18 @@ class IFlowConfigPage(QWidget):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
 
+        desc_path_row = QHBoxLayout()
         desc = QLabel("管理 Agents (代理)，每个代理是一个 Markdown 文件定义的特定角色")
         desc.setObjectName("CardLabel")
         desc.setWordWrap(True)
-        layout.addWidget(desc)
+        desc_path_row.addWidget(desc)
+
+        path_label = QLabel(f"文件夹路径: {IFlowSettings.get_dir()}/agents")
+        path_label.setObjectName("PageSubtitle")
+        path_label.setAlignment(Qt.AlignRight)
+        path_label.setMaximumWidth(400)
+        desc_path_row.addWidget(path_label)
+        layout.addLayout(desc_path_row)
 
         btn_row = QHBoxLayout()
         add_btn = QPushButton("➕  创建代理")
@@ -799,14 +877,21 @@ class IFlowConfigPage(QWidget):
         layout.addLayout(btn_row)
 
         self._agents_table = QTableWidget()
-        self._agents_table.setColumnCount(3)
-        self._agents_table.setHorizontalHeaderLabels(["名称", "路径", "操作"])
+        self._agents_table.setColumnCount(4)
+        self._agents_table.setHorizontalHeaderLabels(["#", "名称", "路径", "操作"])
         self._agents_table.horizontalHeader().setStretchLastSection(False)
         self._agents_table.horizontalHeader().setSectionsMovable(False)
-        self._agents_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._agents_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._agents_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-        self._agents_table.horizontalHeader().resizeSection(2, 220)
+        self._agents_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self._agents_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents
+        )
+        self._agents_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch
+        )
+        self._agents_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self._agents_table.horizontalHeader().resizeSection(3, 220)
         self._agents_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._agents_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._agents_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -824,17 +909,20 @@ class IFlowConfigPage(QWidget):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
 
+        desc_path_row = QHBoxLayout()
         desc = QLabel("管理自定义命令，命令可以从 iFlow 市场安装或本地创建")
         desc.setObjectName("CardLabel")
         desc.setWordWrap(True)
-        layout.addWidget(desc)
+        desc_path_row.addWidget(desc)
+
+        path_label = QLabel(f"文件夹路径: {IFlowSettings.get_dir()}/commands")
+        path_label.setObjectName("PageSubtitle")
+        path_label.setAlignment(Qt.AlignRight)
+        path_label.setMaximumWidth(400)
+        desc_path_row.addWidget(path_label)
+        layout.addLayout(desc_path_row)
 
         btn_row = QHBoxLayout()
-        add_btn = QPushButton("➕  安装命令")
-        add_btn.setObjectName("PrimaryBtn")
-        add_btn.clicked.connect(self._install_command)
-        btn_row.addWidget(add_btn)
-
         browse_btn = QPushButton("🌐  浏览在线市场")
         browse_btn.clicked.connect(lambda: self._open_online_browser("commands"))
         btn_row.addWidget(browse_btn)
@@ -847,23 +935,28 @@ class IFlowConfigPage(QWidget):
         layout.addLayout(btn_row)
 
         self._commands_table = QTableWidget()
-        self._commands_table.setColumnCount(3)
-        self._commands_table.setHorizontalHeaderLabels(["名称", "路径", "操作"])
+        self._commands_table.setColumnCount(4)
+        self._commands_table.setHorizontalHeaderLabels(["#", "名称", "路径", "操作"])
         self._commands_table.horizontalHeader().setStretchLastSection(False)
         self._commands_table.horizontalHeader().setSectionsMovable(False)
-        self._commands_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._commands_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._commands_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-        self._commands_table.horizontalHeader().resizeSection(2, 120)
+        self._commands_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self._commands_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents
+        )
+        self._commands_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch
+        )
+        self._commands_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.Fixed
+        )
+        self._commands_table.horizontalHeader().resizeSection(3, 120)
         self._commands_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._commands_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._commands_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._commands_table.verticalHeader().setVisible(False)
         layout.addWidget(self._commands_table, 1)
-
-        hint = QLabel("CLI: iflow commands add <name-or-id> | iflow commands list --online")
-        hint.setObjectName("CardLabel")
-        layout.addWidget(hint)
 
         return page
 
@@ -891,6 +984,7 @@ class IFlowConfigPage(QWidget):
     def _get_selected_model(self) -> str:
         """获取当前选中的模型名称（去除来源前缀）。"""
         from iflow_desktop.core.shared_utils import get_selected_model_from_combo
+
         return get_selected_model_from_combo(self._model_combo)
 
     # ------------------------------------------------------------------
@@ -921,68 +1015,76 @@ class IFlowConfigPage(QWidget):
 
         checkpointing = settings.get("checkpointing", {})
         self._checkpointing_cb.setChecked(
-            checkpointing.get("enabled", False) if isinstance(checkpointing, dict) else bool(checkpointing)
+            checkpointing.get("enabled", False)
+            if isinstance(checkpointing, dict)
+            else bool(checkpointing)
         )
 
         self._language_combo.setCurrentText(settings.get("language", "zh-CN"))
         self._editor_combo.setCurrentText(settings.get("preferredEditor", "vscode"))
-        self._instructions_edit.setPlainText(
-            settings.get("customInstructions", "")
-        )
+        self._instructions_edit.setPlainText(settings.get("customInstructions", ""))
 
     def _load_mcp(self):
         servers = IFlowSettings.get_mcp_servers()
         self._mcp_table.setRowCount(len(servers))
         for i, (name, cfg) in enumerate(servers.items()):
-            self._mcp_table.setItem(i, 0, QTableWidgetItem(name))
+            # 序号列
+            self._mcp_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+
+            self._mcp_table.setItem(i, 1, QTableWidgetItem(name))
 
             cmd = cfg.get("command", "")
             args = " ".join(cfg.get("args", []))
-            self._mcp_table.setItem(i, 1, QTableWidgetItem(f"{cmd} {args}".strip()))
+            self._mcp_table.setItem(i, 2, QTableWidgetItem(f"{cmd} {args}".strip()))
 
             disabled = cfg.get("disabled", False)
             status_text = "⏸ 禁用" if disabled else "✅ 启用"
-            self._mcp_table.setItem(i, 2, QTableWidgetItem(status_text))
+            self._mcp_table.setItem(i, 3, QTableWidgetItem(status_text))
 
             desc = cfg.get("description", "")
             if len(desc) > 40:
                 desc = desc[:40] + "..."
-            self._mcp_table.setItem(i, 3, QTableWidgetItem(desc))
+            self._mcp_table.setItem(i, 4, QTableWidgetItem(desc))
 
             # 操作按钮
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
             btn_layout.setContentsMargins(4, 2, 4, 2)
             btn_layout.setSpacing(4)
-            btn_widget.setMinimumWidth(220)
+            btn_widget.setMinimumWidth(240)
 
             edit_btn = QPushButton("编辑")
-            edit_btn.setFixedSize(56, 26)
+            edit_btn.setFixedSize(62, 26)
             edit_btn.clicked.connect(lambda checked, n=name: self._edit_mcp_server(n))
             btn_layout.addWidget(edit_btn)
 
             toggle_btn = QPushButton("禁用" if not disabled else "启用")
-            toggle_btn.setFixedSize(56, 26)
-            toggle_btn.clicked.connect(lambda checked, n=name: self._toggle_mcp_server(n))
+            toggle_btn.setFixedSize(62, 26)
+            toggle_btn.clicked.connect(
+                lambda checked, n=name: self._toggle_mcp_server(n)
+            )
             btn_layout.addWidget(toggle_btn)
 
             del_btn = QPushButton("删除")
             del_btn.setObjectName("DangerBtn")
-            del_btn.setFixedSize(56, 26)
+            del_btn.setFixedSize(62, 26)
             del_btn.clicked.connect(lambda checked, n=name: self._remove_mcp_server(n))
             btn_layout.addWidget(del_btn)
 
             btn_layout.addStretch()
             self._mcp_table.setRowHeight(i, 45)
 
-            self._mcp_table.setCellWidget(i, 4, btn_widget)
+            self._mcp_table.setCellWidget(i, 5, btn_widget)
 
     def _load_skills(self):
         skills = CLIBridge.get_skills()
         self._skills_table.setRowCount(len(skills))
         for i, s in enumerate(skills):
-            self._skills_table.setItem(i, 0, QTableWidgetItem(s["name"]))
-            self._skills_table.setItem(i, 1, QTableWidgetItem(s["path"]))
+            # 序号列
+            self._skills_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+
+            self._skills_table.setItem(i, 1, QTableWidgetItem(s["name"]))
+            self._skills_table.setItem(i, 2, QTableWidgetItem(s["path"]))
 
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
@@ -992,49 +1094,61 @@ class IFlowConfigPage(QWidget):
 
             del_btn = QPushButton("🗑️ 删除")
             del_btn.setObjectName("DangerBtn")
-            del_btn.setFixedSize(78, 26)
-            del_btn.clicked.connect(lambda checked, name=s["name"]: self._remove_skill(name))
+            del_btn.setFixedSize(90, 26)
+            del_btn.clicked.connect(
+                lambda checked, name=s["name"]: self._remove_skill(name)
+            )
             btn_layout.addWidget(del_btn)
             btn_layout.addStretch()
 
             self._skills_table.setRowHeight(i, 45)
-            self._skills_table.setCellWidget(i, 2, btn_widget)
+            self._skills_table.setCellWidget(i, 3, btn_widget)
 
     def _load_agents(self):
         agents = CLIBridge.get_agents()
         self._agents_table.setRowCount(len(agents))
         for i, a in enumerate(agents):
-            self._agents_table.setItem(i, 0, QTableWidgetItem(a["name"]))
-            self._agents_table.setItem(i, 1, QTableWidgetItem(a["path"]))
+            # 序号列
+            self._agents_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+
+            self._agents_table.setItem(i, 1, QTableWidgetItem(a["name"]))
+            self._agents_table.setItem(i, 2, QTableWidgetItem(a["path"]))
 
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
             btn_layout.setContentsMargins(4, 2, 4, 2)
             btn_layout.setSpacing(4)
-            btn_widget.setMinimumWidth(200)
+            btn_widget.setMinimumWidth(240)
 
             edit_btn = QPushButton("编辑")
-            edit_btn.setFixedSize(70, 26)
-            edit_btn.clicked.connect(lambda checked, name=a["name"]: self._edit_agent(name))
+            edit_btn.setFixedSize(74, 26)
+            edit_btn.clicked.connect(
+                lambda checked, name=a["name"]: self._edit_agent(name)
+            )
             btn_layout.addWidget(edit_btn)
 
             del_btn = QPushButton("删除")
             del_btn.setObjectName("DangerBtn")
-            del_btn.setFixedSize(70, 26)
-            del_btn.clicked.connect(lambda checked, name=a["name"]: self._remove_agent(name))
+            del_btn.setFixedSize(74, 26)
+            del_btn.clicked.connect(
+                lambda checked, name=a["name"]: self._remove_agent(name)
+            )
             btn_layout.addWidget(del_btn)
 
             btn_layout.addStretch()
             self._agents_table.setRowHeight(i, 45)
 
-            self._agents_table.setCellWidget(i, 2, btn_widget)
+            self._agents_table.setCellWidget(i, 3, btn_widget)
 
     def _load_commands(self):
         commands = CLIBridge.get_commands()
         self._commands_table.setRowCount(len(commands))
         for i, c in enumerate(commands):
-            self._commands_table.setItem(i, 0, QTableWidgetItem(c["name"]))
-            self._commands_table.setItem(i, 1, QTableWidgetItem(c["path"]))
+            # 序号列
+            self._commands_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+
+            self._commands_table.setItem(i, 1, QTableWidgetItem(c["name"]))
+            self._commands_table.setItem(i, 2, QTableWidgetItem(c["path"]))
 
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
@@ -1044,13 +1158,15 @@ class IFlowConfigPage(QWidget):
 
             del_btn = QPushButton("🗑️ 删除")
             del_btn.setObjectName("DangerBtn")
-            del_btn.setFixedSize(78, 26)
-            del_btn.clicked.connect(lambda checked, name=c["name"]: self._remove_command(name))
+            del_btn.setFixedSize(90, 26)
+            del_btn.clicked.connect(
+                lambda checked, name=c["name"]: self._remove_command(name)
+            )
             btn_layout.addWidget(del_btn)
             btn_layout.addStretch()
 
             self._commands_table.setRowHeight(i, 45)
-            self._commands_table.setCellWidget(i, 2, btn_widget)
+            self._commands_table.setCellWidget(i, 3, btn_widget)
 
     # ------------------------------------------------------------------
     # API 模型源切换
@@ -1073,7 +1189,9 @@ class IFlowConfigPage(QWidget):
             api_key = settings.get("apiKey", "")
             base_url = settings.get("baseUrl", "https://apis.iflow.cn/v1")
             if api_key:
-                masked = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
+                masked = (
+                    api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
+                )
                 self._api_model_hint.setText(
                     f"📡 在线模式：从 {base_url}/models 获取模型列表 (Key: {masked})"
                 )
@@ -1082,9 +1200,7 @@ class IFlowConfigPage(QWidget):
                     "⚠️ 未配置 API Key，请先在「登录认证」页面设置 API Key"
                 )
         else:
-            self._api_model_hint.setText(
-                "📦 离线模式：使用 iflow CLI 内置的模型列表"
-            )
+            self._api_model_hint.setText("📦 离线模式：使用 iflow CLI 内置的模型列表")
 
     # ------------------------------------------------------------------
     # 保存操作
@@ -1142,7 +1258,8 @@ class IFlowConfigPage(QWidget):
 
     def _remove_mcp_server(self, name: str):
         reply = QMessageBox.question(
-            self, "确认删除",
+            self,
+            "确认删除",
             f"确定要删除 MCP 服务器 '{name}' 吗？",
             QMessageBox.Yes | QMessageBox.No,
         )
@@ -1153,25 +1270,17 @@ class IFlowConfigPage(QWidget):
     # ------------------------------------------------------------------
     # Skills 操作
     # ------------------------------------------------------------------
-    def _install_skill(self):
-        """通过 CLI 安装 skill。"""
-        from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(
-            self, "安装技能",
-            "请输入技能名称或 ID (来自 iflow 在线仓库):",
-        )
-        if ok and name.strip():
-            self._run_iflow_command(["skill", "add", name.strip()], "安装技能")
-            self._load_skills()
-
     def _remove_skill(self, name: str):
         reply = QMessageBox.question(
-            self, "确认删除", f"确定要删除技能 '{name}' 吗？",
+            self,
+            "确认删除",
+            f"确定要删除技能 '{name}' 吗？",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             # 删除 skills 目录
             import shutil
+
             skill_path = IFlowSettings.get_dir() / "skills" / name
             if skill_path.exists():
                 shutil.rmtree(skill_path, ignore_errors=True)
@@ -1206,7 +1315,9 @@ class IFlowConfigPage(QWidget):
 
     def _remove_agent(self, name: str):
         reply = QMessageBox.question(
-            self, "确认删除", f"确定要删除代理 '{name}' 吗？",
+            self,
+            "确认删除",
+            f"确定要删除代理 '{name}' 吗？",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
@@ -1218,20 +1329,11 @@ class IFlowConfigPage(QWidget):
     # ------------------------------------------------------------------
     # Commands 操作
     # ------------------------------------------------------------------
-    def _install_command(self):
-        """通过 CLI 安装 command。"""
-        from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(
-            self, "安装命令",
-            "请输入命令名称或 ID (来自 iflow 在线市场):",
-        )
-        if ok and name.strip():
-            self._run_iflow_command(["commands", "add", name.strip()], "安装命令")
-            self._load_commands()
-
     def _remove_command(self, name: str):
         reply = QMessageBox.question(
-            self, "确认删除", f"确定要删除命令 '{name}' 吗？",
+            self,
+            "确认删除",
+            f"确定要删除命令 '{name}' 吗？",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
@@ -1258,7 +1360,9 @@ class IFlowConfigPage(QWidget):
                 msg = stderr or stdout or f"{action_name}失败"
                 QMessageBox.warning(self, "失败", msg)
         except FileNotFoundError:
-            QMessageBox.critical(self, "错误", "未找到 iflow 命令，请确保已安装 iflow CLI")
+            QMessageBox.critical(
+                self, "错误", "未找到 iflow 命令，请确保已安装 iflow CLI"
+            )
         except Exception as e:
             QMessageBox.critical(self, "错误", str(e))
 
@@ -1276,20 +1380,25 @@ class IFlowConfigPage(QWidget):
         if repo_type == "mcp":
             # 直接将 MCP 服务器配置写入 settings.json
             reply = QMessageBox.question(
-                self, "确认安装",
+                self,
+                "确认安装",
                 f"确定要添加 MCP 服务器 '{name_or_id}' 吗？",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
                 IFlowSettings.add_mcp_server(name_or_id, config)
                 self._load_mcp()
-                QMessageBox.information(self, "添加成功", f"MCP 服务器 '{name_or_id}' 已添加到配置。")
+                QMessageBox.information(
+                    self, "添加成功", f"MCP 服务器 '{name_or_id}' 已添加到配置。"
+                )
         elif repo_type == "agents":
             self._run_iflow_command(["agent", "add", name_or_id], "安装代理")
             self._load_agents()
         elif repo_type == "skills":
-            self._run_iflow_command(["skill", "add", name_or_id, "--scope", "global"], "安装技能")
+            self._run_iflow_command(
+                ["skill", "add", name_or_id, "--scope", "global"], "添加技能"
+            )
             self._load_skills()
         elif repo_type == "commands":
-            self._run_iflow_command(["commands", "add", name_or_id], "安装命令")
+            self._run_iflow_command(["commands", "add", name_or_id], "添加命令")
             self._load_commands()
